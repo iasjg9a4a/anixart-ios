@@ -1,0 +1,11 @@
+{
+ "code": 0,
+ "channel_id": null,
+ "privilege_level": 0,
+ "rating_score": 1,
+ "sponsorship_expires": 0,
+ "is_sponsor": false,
+ "is_perm_banned": false,
+ "is_banned": false,
+ "ban_expires": 0
+}

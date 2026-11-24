@@ -1,0 +1,17 @@
+﻿# Android RE artefacts (large, regenerable from APK)
+analysis/unpacked/
+analysis/strings.txt
+*.apk
+
+# Xcode
+ios/Anixart.xcodeproj/
+ios/build/
+ios/DerivedData/
+ios/tools/StubSwiftUI/build/
+xcuserdata/
+*.xcuserstate
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
