@@ -1,0 +1,204 @@
+name: screenshots
+
+# Скриншоты UI без Mac: собрать приложение, поставить его в симулятор, запустить
+# и снять экраны. Ручной запуск из вкладки Actions, готовые PNG — в артефакте ui-screenshots.
+on:
+  workflow_dispatch:
+
+jobs:
+  screenshots:
+    name: Скриншоты (iOS Simulator)
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: xcodegen
+        run: brew install xcodegen
+
+      - name: Генерация проекта
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Сборка под симулятор
+        working-directory: ios
+        run: |
+          mkdir -p build
+          # CODE_SIGNING_ALLOWED=NO: подпись для запуска в симуляторе не нужна.
+          # Собирается только .app, без .ipa.
+          xcodebuild -project Anixart.xcodeproj -scheme Anixart \
+            -sdk iphonesimulator -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Загрузка симулятора
+        id: simulator
+        run: |
+          mkdir -p screenshots
+          # На раннере нет фиксированного набора симуляторов: берём первый доступный iPhone.
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          for runtime in sorted(devices):
+              for device in devices[runtime]:
+                  name = device.get('name', '')
+                  if device.get('isAvailable') and name.startswith('iPhone'):
+                      print(device['udid'])
+                      raise SystemExit
+          ")
+          if [ -z "$UDID" ]; then
+            echo "::error::Не найден доступный симулятор iPhone"
+            exit 1
+          fi
+          echo "Симулятор: $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          # Уже загруженный симулятор — не ошибка: boot вернёт ненулевой код.
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: Установка приложения
+        run: |
+          APP="ios/build/DerivedData/Build/Products/Debug-iphonesimulator/Anixart.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::Собранный .app не найден: $APP"
+            exit 1
+          fi
+          xcrun simctl install "${{ steps.simulator.outputs.udid }}" "$APP"
+
+      - name: Скриншот онбординга
+        run: |
+          UDID="${{ steps.simulator.outputs.udid }}"
+          xcrun simctl launch "$UDID" com.swiftsoft.anixart.ios
+          sleep 8
+          xcrun simctl io "$UDID" screenshot screenshots/01-onboarding.png
+
+      - name: Экраны по deep links
+        run: |
+          UDID="${{ steps.simulator.outputs.udid }}"
+          BUNDLE=com.swiftsoft.anixart.ios
+          # Онбординг перекрывает deep link: маршрут ждёт в очереди, пока приветствие
+          # не пройдено, а тапнуть кнопку через simctl нельзя (UI-автоматизации нет).
+          # Второй запуск идёт с флагом в NSArgumentDomain: UserDefaults.standard.bool
+          # читает `-key YES` из аргументов запуска. Флаг не сохраняется в контейнер
+          # и на первый (чистый) экран онбординга не влияет. Вторая форма — нынешняя
+          # документированная запись `-default key=value`; неизвестный аргумент
+          # старые iOS просто игнорируют.
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          xcrun simctl launch "$UDID" "$BUNDLE" \
+            -anixart.onboarding.done YES \
+            -default anixart.onboarding.done=YES
+          sleep 5
+          # Маршрут передаётся аргументом запуска: `openurl` показывает системный
+          # диалог «Открыть в Anixart?», который перекрывает скриншот, а тапнуть
+          # его через simctl нельзя. Приложение читает `-anixart-open-route=...`.
+          # release/1 — стабильный id: есть и в фикстурах, и на живом API.
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          xcrun simctl launch "$UDID" "$BUNDLE" \
+            -anixart.onboarding.done YES \
+            -anixart-open-route=release/1
+          sleep 8
+          xcrun simctl io "$UDID" screenshot screenshots/02-release.png
+
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          xcrun simctl launch "$UDID" "$BUNDLE" \
+            -anixart.onboarding.done YES \
+            -anixart-open-route=search?q=naruto
+          sleep 6
+          xcrun simctl io "$UDID" screenshot screenshots/03-search.png
+
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          xcrun simctl launch "$UDID" "$BUNDLE" \
+            -anixart.onboarding.done YES
+          sleep 8
+          xcrun simctl io "$UDID" screenshot screenshots/04-home.png
+
+          # Все источники релиза 92: у AniLibria — Kodik+Libria, у AniDUB — Sibnet+Kodik.
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          xcrun simctl launch "$UDID" "$BUNDLE" \
+            -anixart.onboarding.done YES \
+            -anixart-open-route=release/92 \
+            -anixart-open-sources
+          sleep 18
+          xcrun simctl io "$UDID" screenshot screenshots/13-all-sources.png
+
+          # Плеер: Kodik (release 1 / source 8) — на нашей сети он отвечает ошибкой,
+          # и автоподбор уводит на другой источник, если он есть.
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          xcrun simctl launch "$UDID" "$BUNDLE" \
+            -anixart.onboarding.done YES \
+            -anixart-open-player=1/8/1
+          sleep 15
+          xcrun simctl io "$UDID" screenshot screenshots/08-player.png
+
+          # Нативный HLS: release 1562 / источник Libria (218) — проверяем AVPlayer.
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          xcrun simctl launch "$UDID" "$BUNDLE" \
+            -anixart.onboarding.done YES \
+            -anixart-open-player=1562/218/1
+          sleep 20
+          xcrun simctl io "$UDID" screenshot screenshots/09-player-native.png
+
+          # Контролы поверх нативного видео (release 1562 / Libria 218): снимок после
+          # 12 секунд — резолв HLS на CI небыстрый, а автоскрытие контролов стартует
+          # только через 6 секунд после открытия плеера, поэтому play/pause,
+          # ползунок, скорость, качество и PiP должны быть в кадре.
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          xcrun simctl launch "$UDID" "$BUNDLE" \
+            -anixart.onboarding.done YES \
+            -anixart-open-player=1562/218/1 \
+            -anixart-force-player-controls
+          sleep 12
+          xcrun simctl io "$UDID" screenshot screenshots/14-player-controls.png
+
+          # AnixPlayer/StudioMir: release 20277 / источник TSM (416) — HLS с studiomir.
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          xcrun simctl launch "$UDID" "$BUNDLE" \
+            -anixart.onboarding.done YES \
+            -anixart-open-player=20277/416/1
+          sleep 20
+          xcrun simctl io "$UDID" screenshot screenshots/10-player-anixplayer.png
+
+          # YouTube-встраивание (трейлер релиза 92) — проверяем .youtube-плеер.
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          xcrun simctl launch "$UDID" "$BUNDLE" \
+            -anixart.onboarding.done YES \
+            -anixart-open-video=92/216
+          sleep 18
+          xcrun simctl io "$UDID" screenshot screenshots/11-video-youtube.png
+
+          # VK-встраивание (превью релиза 92) — проверяем web-плеер для видео.
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          xcrun simctl launch "$UDID" "$BUNDLE" \
+            -anixart.onboarding.done YES \
+            -anixart-open-video=92/54154
+          sleep 18
+          xcrun simctl io "$UDID" screenshot screenshots/12-video-vk.png
+
+          for case in "collection/1:05-collection" "settings:06-settings" "history:07-history"; do
+            ROUTE="${case%%:*}"
+            NAME="${case##*:}"
+            xcrun simctl terminate "$UDID" "$BUNDLE" || true
+            xcrun simctl launch "$UDID" "$BUNDLE" \
+              -anixart.onboarding.done YES \
+              "-anixart-open-route=$ROUTE"
+            sleep 6
+            xcrun simctl io "$UDID" screenshot "screenshots/$NAME.png"
+          done
+
+      - name: Список скриншотов
+        if: always()
+        run: ls -lh screenshots || true
+
+      - name: Скриншоты (артефакт)
+        # Артефакт грузится даже при падении сборки/симулятора: ошибка не маскируется
+        # (job всё равно красный), но то, что успели снять, доступно для глаза.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: screenshots/
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true

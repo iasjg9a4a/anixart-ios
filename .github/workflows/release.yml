@@ -1,0 +1,78 @@
+name: release
+
+# Публикация неподписанного IPA по тегу: v1.0.0, v1.2.3-beta, ...
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Неподписанный IPA → GitHub Release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Кэш Homebrew (скачанные bottle)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-xcodegen-${{ hashFiles('ios/project.yml') }}
+          restore-keys: |
+            brew-${{ runner.os }}-xcodegen-
+
+      - name: xcodegen
+        run: brew install xcodegen
+
+      - name: Генерация проекта
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Архив без подписи
+        working-directory: ios
+        run: |
+          xcodebuild -project Anixart.xcodeproj -scheme Anixart \
+            -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Anixart.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" archive
+
+      - name: Упаковать .ipa
+        run: |
+          mkdir -p build/Payload
+          cp -R ios/build/Anixart.xcarchive/Products/Applications/Anixart.app build/Payload/
+          cd build && zip -qry Anixart-unsigned.ipa Payload
+          ls -lh Anixart-unsigned.ipa
+
+      - name: Логи при падении
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ios/build/Anixart.xcarchive
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Артефакт IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anixart-unsigned-ipa
+          path: build/Anixart-unsigned.ipa
+          retention-days: 14
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Anixart-unsigned.ipa
+          name: Anixart ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
