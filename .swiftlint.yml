@@ -1,0 +1,100 @@
+# SwiftLint для iOS-клиента Anixart.
+#
+# Запуск из корня репозитория:
+#   swiftlint lint --config .swiftlint.yml
+#
+# Правила оформления кода и обоснования — docs/STYLE.md.
+# Конфиг рассчитан на SwiftUI-приложение с deployment target iOS 16.0.
+
+# Не линтим то, что не пишем руками.
+excluded:
+  - ios/tools/StubSwiftUI/build   # сгенерированные заглушки SwiftUI для Linux-typecheck
+  - ios/Anixart.xcodeproj         # генерируется xcodegen из project.yml
+
+disabled_rules:
+  # TODO/FIXME считаем рабочими заметками, а не нарушением стиля.
+  - todo
+  # В проекте коллекции оформляются без «висячих» запятых.
+  - trailing_comma
+
+opt_in_rules:
+  # Правила не из набора по умолчанию — включаем явно.
+  - empty_count          # .isEmpty вместо .count == 0
+  - force_unwrapping     # каждый «!» — повод задуматься
+
+# --- Полезные правила из набора по умолчанию --------------------------------
+# force_cast, force_try, colon, comma, opening_brace, identifier_name,
+# trailing_whitespace, vertical_whitespace, unused_closure_parameter,
+# redundant_optional_initialization включены всегда; ниже зафиксированы их
+# настройки, чтобы состав правил читался из конфига целиком.
+
+# В клиенте нет force cast / force try, и появиться они не должны.
+force_cast: error
+force_try: error
+
+# 10 исторических «!» (8 в Models.swift после isEmpty == false + 2 константных
+# URL) — предупреждения, а не ошибки: новый код пишется через guard let / ??.
+force_unwrapping: warning
+
+empty_count:
+  only_after_dot: false
+
+redundant_optional_initialization: warning
+unused_closure_parameter: warning
+trailing_whitespace: warning
+comma: warning
+
+colon:
+  flexible_right_spacing: false
+  apply_to_dictionaries: true
+
+opening_brace:
+  ignore_multiline_statement_conditions: true
+
+vertical_whitespace:
+  max_empty_lines: 1
+
+# --- Размеры: лимиты под реальные файлы, а не под идеал ---------------------
+
+line_length:
+  warning: 140
+  error: 200
+  ignores_urls: true
+  ignores_comments: false
+
+file_length:
+  warning: 600
+  error: 900
+
+type_body_length:
+  warning: 400
+  error: 600
+
+function_body_length:
+  warning: 80
+  error: 120
+
+function_parameter_count:
+  warning: 6
+  error: 8
+
+cyclomatic_complexity:
+  warning: 15
+  error: 25
+
+# Короткие имена вроде id / x / q нормальны в своём контексте.
+identifier_name:
+  min_length: 1
+  max_length:
+    warning: 45
+    error: 60
+  excluded:
+    - id
+    - x
+    - q
+
+type_name:
+  min_length: 3
+  max_length:
+    warning: 45
+    error: 60
