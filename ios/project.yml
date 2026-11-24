@@ -1,0 +1,115 @@
+name: Anixart
+options:
+  bundleIdPrefix: com.swiftsoft
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  xcodeVersion: "15.0"
+  projectFormat: xcode15_0
+
+# XcodeGen не создаёт shared-схемы автоматически, а `xcodebuild -scheme Anixart`
+# (CI и tools/check.sh) без неё падает. Схема нужна явно.
+schemes:
+  Anixart:
+    build:
+      targets:
+        Anixart: all
+        AnixartTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - AnixartTests
+    archive:
+      config: Release
+
+  AnixartUI:
+    build:
+      targets:
+        Anixart: all
+        AnixartUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - AnixartUITests
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    SWIFT_STRICT_CONCURRENCY: minimal
+
+targets:
+  Anixart:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: Anixart
+        excludes:
+          - "Resources/Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.swiftsoft.anixart.ios
+        PRODUCT_NAME: Anixart
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+    info:
+      path: Anixart/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Anixart
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
+        UIRequiresFullScreen: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIUserInterfaceStyle: Dark
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Viewer
+            CFBundleURLName: com.swiftsoft.anixart.ios
+            CFBundleURLSchemes:
+              - anixart
+        NSCameraUsageDescription: "Камера нужна, чтобы сменить аватар."
+        NSPhotoLibraryUsageDescription: "Доступ к фото нужен, чтобы сменить аватар."
+
+  AnixartTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: AnixartTests
+    dependencies:
+      - target: Anixart
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.swiftsoft.anixart.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+  AnixartUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: AnixartUITests
+    dependencies:
+      - target: Anixart
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.swiftsoft.anixart.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Anixart
