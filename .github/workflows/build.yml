@@ -1,0 +1,224 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+# Новый прогон того же workflow/события/ref отменяет предыдущий.
+# event_name в группе, чтобы push не отменял ручной ipa-прогон на той же ветке.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Ядро (Linux, Swift)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+
+      - name: Typecheck моделей и API-клиента
+        run: |
+          swiftc --version
+          swiftc -typecheck ios/Anixart/Models/Models.swift
+          cat > /tmp/stub.swift <<'SWIFT'
+          import Foundation
+          final class TokenStore {
+              static let shared = TokenStore()
+              private(set) var token: String?
+              private init() {}
+              func save(_ value: String) { token = value }
+              func clear() { token = nil }
+          }
+          SWIFT
+          cat /tmp/stub.swift ios/Anixart/Models/Models.swift ios/Anixart/Core/RetryPolicy.swift ios/Anixart/Core/APIClient.swift > /tmp/core.swift
+          swiftc -typecheck /tmp/core.swift
+
+      - name: Проверка моделей на реальных ответах API
+        run: |
+          swiftc -o /tmp/modelcheck ios/Anixart/Models/Models.swift ios/tools/ModelCheck/main.swift
+          /tmp/modelcheck ios/tools/fixtures
+
+  ios:
+    name: Сборка iOS (macOS)
+    # macOS-минуты на приватном репозитории тратятся x10, поэтому в режиме
+    # «на каждый push» крутим только Linux-ядро, а сборку — по кнопке.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Кэш Homebrew (скачанные bottle)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-xcodegen-${{ hashFiles('ios/project.yml') }}
+          restore-keys: |
+            brew-${{ runner.os }}-xcodegen-
+
+      - name: xcodegen
+        run: brew install xcodegen
+
+      - name: Генерация проекта
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Версия Xcode
+        id: xcode
+        run: echo "version=$(xcodebuild -version | head -1 | sed 's/ /_/g')" >> "$GITHUB_OUTPUT"
+
+      - name: Кэш DerivedData
+        uses: actions/cache@v4
+        with:
+          path: ios/build/DerivedData
+          # Версия Xcode в ключе: после обновления раннера кэш модулей не переиспользуем.
+          key: dd-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('ios/project.yml', 'ios/Anixart/**/*.swift', 'ios/AnixartTests/**/*.swift') }}
+          restore-keys: |
+            dd-${{ runner.os }}-${{ steps.xcode.outputs.version }}-
+
+      - name: Сборка для симулятора
+        working-directory: ios
+        run: |
+          mkdir -p build
+          xcodebuild -project Anixart.xcodeproj -scheme Anixart \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Юнит-тесты
+        working-directory: ios
+        run: |
+          mkdir -p build
+          # На раннере нет фиксированного набора симуляторов — берём первый доступный.
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)['devices']
+          for runtime in sorted(data):
+              for device in data[runtime]:
+                  if device.get('isAvailable'):
+                      print(device['udid'])
+                      raise SystemExit
+          ")
+          echo "Симулятор: $DEVICE_ID"
+          xcodebuild test -project Anixart.xcodeproj -scheme Anixart \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -derivedDataPath build/DerivedData \
+            -resultBundlePath build/TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Логи и .xcresult при падении
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ios/build/TestResults.xcresult
+            ios/build/DerivedData/Logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  ipa:
+    name: Неподписанный IPA (для Sideloadly)
+    # Только по кнопке: macOS-минуты на бесплатном плане тратятся x10.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Кэш Homebrew (скачанные bottle)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-xcodegen-${{ hashFiles('ios/project.yml') }}
+          restore-keys: |
+            brew-${{ runner.os }}-xcodegen-
+
+      - name: xcodegen
+        run: brew install xcodegen
+
+      - name: Генерация проекта
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Архив без подписи
+        working-directory: ios
+        run: |
+          xcodebuild -project Anixart.xcodeproj -scheme Anixart \
+            -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Anixart.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" archive
+
+      - name: Упаковать .ipa
+        run: |
+          mkdir -p build/Payload
+          cp -R ios/build/Anixart.xcarchive/Products/Applications/Anixart.app build/Payload/
+          cd build && zip -qry Anixart-unsigned.ipa Payload
+          ls -lh Anixart-unsigned.ipa
+
+      - name: Логи при падении
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ios/build/Anixart.xcarchive
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Anixart-unsigned-ipa
+          path: build/Anixart-unsigned.ipa
+          retention-days: 14
+
+  uitests:
+    name: UI-тесты (macOS, по кнопке)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: xcodegen
+        run: brew install xcodegen
+
+      - name: Генерация проекта
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: UI-тесты на симуляторе
+        working-directory: ios
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)['devices']
+          for runtime in sorted(data):
+              for device in data[runtime]:
+                  if device.get('isAvailable') and 'iPhone' in device.get('name', ''):
+                      print(device['udid'])
+                      raise SystemExit
+          ")
+          echo "Симулятор: $DEVICE_ID"
+          xcodebuild test -project Anixart.xcodeproj -scheme AnixartUI \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            CODE_SIGNING_ALLOWED=NO \
+            -resultBundlePath build/UITests.xcresult || status=$?
+          if [ -d build/UITests.xcresult ]; then echo "xcresult на месте"; fi
+          exit ${status:-0}
+
+      - name: xcresult
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-tests-xcresult
+          path: ios/build/UITests.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
